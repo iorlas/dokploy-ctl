@@ -1,0 +1,56 @@
+"""Init command — create new compose app."""
+
+import json
+import sys
+
+import click
+
+from dokployctl.client import _err, api_call, load_config, make_client, print_response
+
+
+@click.command()
+@click.argument("project_id")
+@click.argument("app_name")
+def init(project_id: str, app_name: str) -> None:
+    """Create new compose app (with sourceType fix)."""
+    url, token = load_config()
+    client = make_client(url, token)
+
+    resp = api_call(
+        client,
+        "POST",
+        "compose.create",
+        {
+            "name": app_name,
+            "projectId": project_id,
+        },
+    )
+    if resp.is_error:
+        print_response(resp)
+        return
+
+    result = resp.json()
+    compose_id = result.get("composeId")
+    if not compose_id:
+        _err("error: compose.create returned no composeId")
+        click.echo(json.dumps(result, indent=2))
+        sys.exit(1)
+
+    click.echo(f"Created compose app: {compose_id}")
+
+    fix_resp = api_call(
+        client,
+        "POST",
+        "compose.update",
+        {
+            "composeId": compose_id,
+            "sourceType": "raw",
+        },
+    )
+    if fix_resp.is_error:
+        _err(f"warning: failed to fix sourceType (HTTP {fix_resp.status_code})")
+    else:
+        click.echo("Fixed sourceType to 'raw'")
+
+    click.echo(f"\nCompose ID: {compose_id}")
+    click.echo(f"Use: dokployctl deploy {compose_id} docker-compose.prod.yml")

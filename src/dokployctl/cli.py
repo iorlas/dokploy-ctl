@@ -2,7 +2,12 @@
 
 import click
 
+from dokployctl.api_cmd import api
 from dokployctl.client import DEFAULT_CONFIG_DIR
+from dokployctl.deploy import deploy, sync
+from dokployctl.init_cmd import init
+from dokployctl.logs import logs
+from dokployctl.status import status
 
 
 @click.group()
@@ -20,3 +25,11 @@ def login(url: str, token: str) -> None:
     (DEFAULT_CONFIG_DIR / "url").write_text(url.rstrip("/") + "\n")
     (DEFAULT_CONFIG_DIR / "token").write_text(token + "\n")
     click.echo(f"Saved credentials to {DEFAULT_CONFIG_DIR}")
+
+
+cli.add_command(api)
+cli.add_command(status)
+cli.add_command(logs)
+cli.add_command(deploy)
+cli.add_command(sync)
+cli.add_command(init)
