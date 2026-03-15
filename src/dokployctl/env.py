@@ -30,11 +30,15 @@ def build_env_from_compose(compose_content: str) -> str:
     return "\n".join(lines)
 
 
-def resolve_env(env_file: str | None, compose_content: str) -> str | None:
-    """Resolve env from --env-file or auto-detect from compose ${VAR} refs."""
+def resolve_env(env_flag: bool, env_file: str | None, compose_content: str) -> str | None:
+    """Resolve env only if explicitly requested via --env or --env-file."""
+    if env_flag and env_file:
+        click.echo("error: --env and --env-file are mutually exclusive", err=True)
+        sys.exit(1)
     if env_file:
         return Path(env_file).read_text()
-    env_vars = extract_env_vars(compose_content)
-    if env_vars:
-        return build_env_from_compose(compose_content)
+    if env_flag:
+        env_vars = extract_env_vars(compose_content)
+        if env_vars:
+            return build_env_from_compose(compose_content)
     return None

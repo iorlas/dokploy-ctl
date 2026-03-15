@@ -12,7 +12,7 @@ from dokployctl.containers import get_containers, show_deploy_log, show_problem_
 from dokployctl.env import resolve_env
 
 
-def _do_sync(client, compose_id: str, compose_file: str, env_file: str | None) -> None:
+def _do_sync(client, compose_id: str, compose_file: str, env_file: str | None, env_flag: bool = False) -> None:
     """Shared sync logic used by both sync and deploy commands."""
     compose_content = Path(compose_file).read_text()
 
@@ -23,7 +23,7 @@ def _do_sync(client, compose_id: str, compose_file: str, env_file: str | None) -
         "composePath": "./docker-compose.yml",
     }
 
-    env_content = resolve_env(env_file, compose_content)
+    env_content = resolve_env(env_flag, env_file, compose_content)
     if env_content is not None:
         payload["env"] = env_content
 
@@ -48,26 +48,28 @@ def _do_sync(client, compose_id: str, compose_file: str, env_file: str | None) -
 @click.command(context_settings={"ignore_unknown_options": True})
 @click.argument("compose_id", type=DOKPLOY_ID)
 @click.argument("compose_file")
-@click.option("--env-file", "-e", default=None, help="Path to .env file (if omitted, auto-resolves from compose)")
-def sync(compose_id: str, compose_file: str, env_file: str | None) -> None:
+@click.option("--env-file", "-e", default=None, help="Path to .env file")
+@click.option("--env", "env_flag", is_flag=True, default=False, help="Resolve ${VAR} refs from environment")
+def sync(compose_id: str, compose_file: str, env_file: str | None, env_flag: bool) -> None:
     """Sync compose file + env to Dokploy."""
     url, token = load_config()
     client = make_client(url, token)
-    _do_sync(client, compose_id, compose_file, env_file)
+    _do_sync(client, compose_id, compose_file, env_file, env_flag)
 
 
 @click.command(context_settings={"ignore_unknown_options": True})
 @click.argument("compose_id", type=DOKPLOY_ID)
 @click.argument("compose_file")
-@click.option("--env-file", "-e", default=None, help="Path to .env file (if omitted, auto-resolves from compose)")
+@click.option("--env-file", "-e", default=None, help="Path to .env file")
+@click.option("--env", "env_flag", is_flag=True, default=False, help="Resolve ${VAR} refs from environment")
 @click.option("--timeout", "-t", default=300, help="Deploy timeout in seconds (default: 300)")
-def deploy(compose_id: str, compose_file: str, env_file: str | None, timeout: int) -> None:
+def deploy(compose_id: str, compose_file: str, env_file: str | None, env_flag: bool, timeout: int) -> None:
     """Sync + deploy + poll + verify container health."""
     url, token = load_config()
     client = make_client(url, token)
 
     # Step 1: sync
-    _do_sync(client, compose_id, compose_file, env_file)
+    _do_sync(client, compose_id, compose_file, env_file, env_flag)
 
     # Step 2: snapshot previous deployment ID
     pre_resp = api_call(client, "GET", "deployment.allByCompose", {"composeId": compose_id})
