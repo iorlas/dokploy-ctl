@@ -2,8 +2,8 @@
 
 import click
 
-from dokploy_ctl.client import DOKPLOY_ID, api_call, load_config, make_client, print_response
-from dokploy_ctl.containers import get_containers
+from dokploy_ctl.client import DOKPLOY_ID
+from dokploy_ctl.dokploy import DokployClient
 from dokploy_ctl.timer import Timer
 from dokploy_ctl.websocket import fetch_container_logs, fetch_deploy_log
 
@@ -18,30 +18,22 @@ def logs(compose_id: str, service: str | None, tail: int, since: str, show_deplo
     """Show container runtime logs (or deploy build log with -D)."""
     timer = Timer()
     timer.log(f"Fetching logs for {compose_id} (last {since}, tail {tail})...")
-    url, token = load_config()
-    client = make_client(url, token)
+    client = DokployClient()
 
-    resp = api_call(client, "GET", "compose.one", {"composeId": compose_id})
-    if resp.is_error:
-        print_response(resp)
-        return
-
-    data = resp.json()
-    app_name = data.get("appName", "")
+    comp = client.get_compose(compose_id)
+    app_name = comp.app_name
 
     if show_deploy:
-        deployments = data.get("deployments", [])
-        if not deployments:
+        if not comp.deployments:
             click.echo("No deployments found.")
             return
-        latest = deployments[0]
-        log_path = latest.get("logPath", "")
-        click.echo(f"Deploy: {latest.get('title', '?')} ({latest.get('status', '?')})")
-        click.echo(f"  at:   {latest.get('createdAt', '?')}")
-        if not log_path:
+        latest = comp.deployments[0]
+        click.echo(f"Deploy: {latest.title} ({latest.status})")
+        click.echo(f"  at:   {latest.created_at}")
+        if not latest.log_path:
             click.echo("  (no log path)")
             return
-        lines = fetch_deploy_log(url, token, log_path, recv_timeout=5)
+        lines = fetch_deploy_log(client.url, client.token, latest.log_path, recv_timeout=5)
         if not lines:
             click.echo("  (no log content — file may have been cleaned up)")
             return
@@ -49,31 +41,28 @@ def logs(compose_id: str, service: str | None, tail: int, since: str, show_deplo
             click.echo(line.rstrip())
         return
 
-    containers = get_containers(client, app_name)
+    containers = client.get_containers(app_name)
     if not containers:
         click.echo("No running containers found.")
         return
 
     if service:
-        containers = [c for c in containers if service in c.get("name", "")]
+        containers = [c for c in containers if service in c.service]
         if not containers:
             click.echo(f"No container found matching service '{service}'")
-            available = get_containers(client, app_name)
-            if available:
+            all_containers = client.get_containers(app_name)
+            if all_containers:
                 click.echo("Available services:")
-                for c in available:
-                    name = c.get("name", "?").replace(f"{app_name}-", "").rstrip("-1234567890")
-                    click.echo(f"  {name}")
+                for c in all_containers:
+                    click.echo(f"  {c.service}")
             return
 
     for c in containers:
-        cid = c.get("containerId", "")
-        if not cid:
+        if not c.container_id:
             continue
-        short = c.get("name", "?").replace(f"{app_name}-", "").rstrip("-1234567890")
-        fetched = fetch_container_logs(url, token, cid, tail=tail, since=since)
+        fetched = fetch_container_logs(client.url, client.token, c.container_id, tail=tail, since=since)
         if len(containers) > 1:
-            click.echo(f"--- {short} (container: {cid}) ---")
+            click.echo(f"--- {c.service} (container: {c.container_id}) ---")
         for line in fetched:
             click.echo(line.rstrip())
         if len(containers) > 1:

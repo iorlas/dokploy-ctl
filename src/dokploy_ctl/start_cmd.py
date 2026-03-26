@@ -1,12 +1,51 @@
 """Start command."""
 
+import time
+
 import click
 
-from dokploy_ctl.client import DOKPLOY_ID, _err, api_call, load_config, make_client
-from dokploy_ctl.containers import get_containers, verify_container_health
+from dokploy_ctl.client import DOKPLOY_ID
+from dokploy_ctl.dokploy import ContainerInfo, DokployClient
 from dokploy_ctl.hints import hint_unhealthy
-from dokploy_ctl.output import parse_service_name
 from dokploy_ctl.timer import Timer
+
+
+def _container_ok(c: ContainerInfo) -> bool:
+    """Container is healthy if running+healthy, running without healthcheck, or one-shot success."""
+    return (
+        (c.state == "exited" and "Exited (0)" in c.raw_status)
+        or (c.state == "running" and c.health == "healthy")
+        or (c.state == "running" and c.health == "\u2014" and "(unhealthy)" not in c.raw_status)
+    )
+
+
+def _container_converging(c: ContainerInfo) -> bool:
+    return c.health == "starting" or c.state == "restarting"
+
+
+def _verify_health(client: DokployClient, app_name: str, timeout: int = 120) -> bool:
+    max_attempts = timeout // 5
+    for i in range(1, max_attempts + 1):
+        containers = client.get_containers(app_name)
+        if not containers:
+            click.echo(f"  [health {i}/{max_attempts}] No containers found for {app_name}")
+            time.sleep(5)
+            continue
+
+        all_ok = all(_container_ok(c) for c in containers)
+        still_converging = any(_container_converging(c) for c in containers)
+
+        labels = [f"{c.service}={'ok' if _container_ok(c) else c.health if c.health != chr(0x2014) else c.state}" for c in containers]
+        click.echo(f"  [health {i}/{max_attempts}] {', '.join(labels)}")
+
+        if all_ok:
+            return True
+        if not still_converging:
+            return False
+
+        time.sleep(5)
+
+    return False
 
 
 @click.command(context_settings={"ignore_unknown_options": True})
@@ -14,38 +53,25 @@ from dokploy_ctl.timer import Timer
 def start(compose_id: str) -> None:
     """Start a stopped compose app and verify health."""
     timer = Timer()
-    url, token = load_config()
-    client = make_client(url, token)
+    client = DokployClient()
 
     timer.log(f"Starting compose {compose_id}...")
-    resp = api_call(client, "POST", "compose.start", {"composeId": compose_id})
-    if resp.is_error:
-        _err(f"error: compose.start failed (HTTP {resp.status_code})")
-        raise SystemExit(1)
+    client.start_compose(compose_id)
 
-    # Get app name for health check
-    app_resp = api_call(client, "GET", "compose.one", {"composeId": compose_id})
-    if app_resp.is_error:
-        _err("warning: could not fetch app info for health check")
-        timer.summary("Started (health check skipped).")
-        return
-
-    app_name = app_resp.json().get("appName", "")
+    comp = client.get_compose(compose_id)
+    app_name = comp.app_name
     if not app_name:
         timer.summary("Started (no appName for health check).")
         return
 
     timer.log("Verifying container health...")
-    healthy = verify_container_health(client, app_name, timeout=120)
+    healthy = _verify_health(client, app_name, timeout=120)
     if healthy:
         timer.summary("All containers healthy. Started.")
     else:
-        containers = get_containers(client, app_name)
+        containers = client.get_containers(app_name)
         for c in containers:
-            state = c.get("state", "")
-            status = c.get("status", "")
-            if state != "running" or "(unhealthy)" in status:
-                svc = parse_service_name(c.get("name", ""), app_name)
-                click.echo(hint_unhealthy(compose_id, svc))
+            if not _container_ok(c):
+                click.echo(hint_unhealthy(compose_id, c.service))
         timer.summary("Started but not all containers healthy.")
         raise SystemExit(1)

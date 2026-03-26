@@ -2,9 +2,8 @@
 
 import click
 
-from dokploy_ctl.client import DOKPLOY_ID, _err, api_call, load_config, make_client
-from dokploy_ctl.containers import get_containers
-from dokploy_ctl.output import parse_service_name
+from dokploy_ctl.client import DOKPLOY_ID
+from dokploy_ctl.dokploy import DokployClient
 from dokploy_ctl.timer import Timer
 
 
@@ -14,43 +13,29 @@ from dokploy_ctl.timer import Timer
 def restart(compose_id: str, service: str | None) -> None:
     """Restart containers. Without --service, redeploys the compose app."""
     timer = Timer()
-    url, token = load_config()
-    client = make_client(url, token)
+    client = DokployClient()
 
     if service:
-        # Find the container ID for this service
-        app_resp = api_call(client, "GET", "compose.one", {"composeId": compose_id})
-        if app_resp.is_error:
-            _err(f"error: could not fetch compose app (HTTP {app_resp.status_code})")
-            raise SystemExit(1)
+        comp = client.get_compose(compose_id)
+        app_name = comp.app_name
+        containers = client.get_containers(app_name)
 
-        app_name = app_resp.json().get("appName", "")
-        containers = get_containers(client, app_name)
-
-        matching = [c for c in containers if service in parse_service_name(c.get("name", ""), app_name)]
+        matching = [c for c in containers if service in c.service]
         if not matching:
-            _err(f"error: no container found matching service '{service}'")
-            available = [parse_service_name(c.get("name", ""), app_name) for c in containers]
+            click.echo(f"error: no container found matching service '{service}'", err=True)
+            available = [c.service for c in containers]
             if available:
                 click.echo(f"Available services: {', '.join(sorted(set(available)))}")
             raise SystemExit(1)
 
         for c in matching:
-            cid = c.get("containerId", "")
-            svc = parse_service_name(c.get("name", ""), app_name)
-            timer.log(f"Restarting {svc} (container: {cid[:8]})...")
-            resp = api_call(client, "POST", "docker.restartContainer", {"containerId": cid})
-            if resp.is_error:
-                _err(f"error: restart failed for {svc} (HTTP {resp.status_code})")
-                raise SystemExit(1)
+            timer.log(f"Restarting {c.service} (container: {c.container_id[:8]})...")
+            client.restart_container(c.container_id)
 
         timer.summary(f"Restarted {len(matching)} container(s).")
     else:
         # Redeploy the whole compose app
         timer.log(f"Redeploying compose {compose_id}...")
-        resp = api_call(client, "POST", "compose.redeploy", {"composeId": compose_id})
-        if resp.is_error:
-            _err(f"error: redeploy failed (HTTP {resp.status_code})")
-            raise SystemExit(1)
+        client.redeploy_compose(compose_id)
         timer.summary("Redeploy triggered.")
         click.echo(f"\nHint: Monitor with: dokploy-ctl status {compose_id}")

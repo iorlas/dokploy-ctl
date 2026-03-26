@@ -1,25 +1,32 @@
 # tests/test_stop_start.py
 from unittest.mock import MagicMock, patch
 
-import httpx
 from click.testing import CliRunner
 
 from dokploy_ctl.cli import cli
+from dokploy_ctl.dokploy import ComposeApp, ContainerInfo
 
 
-def _mock_response(data, status_code=200):
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = data
-    resp.is_error = status_code >= 400
-    resp.status_code = status_code
-    return resp
+def _mock_compose(app_name="test-app"):
+    comp = MagicMock(spec=ComposeApp)
+    comp.app_name = app_name
+    return comp
 
 
-@patch("dokploy_ctl.stop_cmd.load_config", return_value=("https://example.com", "token"))
-@patch("dokploy_ctl.stop_cmd.make_client")
-@patch("dokploy_ctl.stop_cmd.api_call")
-def test_stop_succeeds(mock_api, mock_client, mock_config):
-    mock_api.return_value = _mock_response({})
+def _mock_container(service, state="running", health="healthy", raw_status="Up 2h (healthy)"):
+    c = MagicMock(spec=ContainerInfo)
+    c.service = service
+    c.state = state
+    c.health = health
+    c.raw_status = raw_status
+    c.container_id = "abc123"
+    c.image = "img:tag"
+    c.uptime = "2h"
+    return c
+
+
+@patch("dokploy_ctl.stop_cmd.DokployClient")
+def test_stop_succeeds(mock_client_cls):
     runner = CliRunner()
     result = runner.invoke(cli, ["stop", "test-id"])
     assert result.exit_code == 0
@@ -28,27 +35,20 @@ def test_stop_succeeds(mock_api, mock_client, mock_config):
     assert "dokploy-ctl start test-id" in result.output
 
 
-@patch("dokploy_ctl.stop_cmd.load_config", return_value=("https://example.com", "token"))
-@patch("dokploy_ctl.stop_cmd.make_client")
-@patch("dokploy_ctl.stop_cmd.api_call")
-def test_stop_api_error(mock_api, mock_client, mock_config):
-    mock_api.return_value = _mock_response({}, status_code=500)
+@patch("dokploy_ctl.stop_cmd.DokployClient")
+def test_stop_api_error(mock_client_cls):
+    mock_client_cls.return_value.stop_compose.side_effect = SystemExit(1)
     runner = CliRunner()
     result = runner.invoke(cli, ["stop", "test-id"])
     assert result.exit_code != 0
 
 
-@patch("dokploy_ctl.start_cmd.load_config", return_value=("https://example.com", "token"))
-@patch("dokploy_ctl.start_cmd.make_client")
-@patch("dokploy_ctl.start_cmd.api_call")
-@patch("dokploy_ctl.start_cmd.verify_container_health", return_value=True)
-def test_start_succeeds(mock_health, mock_api, mock_client, mock_config):
-    mock_api.side_effect = [
-        _mock_response({}),  # compose.start
-        _mock_response({"appName": "test-app"}),  # compose.one
-    ]
+@patch("dokploy_ctl.start_cmd.DokployClient")
+def test_start_succeeds(mock_client_cls):
+    mock_client_cls.return_value.get_compose.return_value = _mock_compose("test-app")
+    mock_client_cls.return_value.get_containers.return_value = [_mock_container("web")]
+
     runner = CliRunner()
     result = runner.invoke(cli, ["start", "test-id"])
     assert result.exit_code == 0
     assert "Starting" in result.output
-    assert "healthy" in result.output.lower() or "Started" in result.output

@@ -2,11 +2,25 @@
 
 import click
 
-from dokploy_ctl.client import DOKPLOY_ID, api_call, load_config, make_client, print_response
-from dokploy_ctl.containers import _container_ok, get_containers
+from dokploy_ctl.client import DOKPLOY_ID
+from dokploy_ctl.dokploy import ContainerInfo, DokployClient
 from dokploy_ctl.hints import hint_no_containers, hint_unhealthy
-from dokploy_ctl.output import format_container_table, parse_service_name
 from dokploy_ctl.timer import Timer
+
+
+def _container_ok(c: ContainerInfo) -> bool:
+    """Container is healthy if running+healthy, running without healthcheck, or one-shot success."""
+    return (
+        (c.state == "exited" and "Exited (0)" in c.raw_status)
+        or (c.state == "running" and c.health == "healthy")
+        or (c.state == "running" and c.health == "\u2014" and "(unhealthy)" not in c.raw_status)
+    )
+
+
+def _format_container_table(containers: list[ContainerInfo]) -> str:
+    header = f"  {'SERVICE':<20} {'STATE':<10} {'HEALTH':<12} {'IMAGE':<45} {'UPTIME':<8} CONTAINER ID"
+    rows = [f"  {c.service:<20} {c.state:<10} {c.health:<12} {c.image:<45} {c.uptime:<8} {c.container_id[:8]}" for c in containers]
+    return "\n".join([header, *rows])
 
 
 @click.command(context_settings={"ignore_unknown_options": True})
@@ -21,34 +35,24 @@ def status(compose_id: str, live: bool) -> None:
 
     timer.log(f"Fetching compose app {compose_id}...")
 
-    url, token = load_config()
-    client = make_client(url, token)
+    client = DokployClient()
+    comp = client.get_compose(compose_id)
 
-    resp = api_call(client, "GET", "compose.one", {"composeId": compose_id})
-    if resp.is_error:
-        print_response(resp)
-        return
-
-    data = resp.json()
-    app_name = data.get("appName", "?")
-    click.echo(f"\nName:         {data.get('name', '?')}")
-    click.echo(f"App name:     {app_name}")
-    click.echo(f"Status:       {data.get('composeStatus', '?')}")
-    compose_file = data.get("composeFile", "")
-    click.echo(f"Compose:      {len(compose_file):,} chars")
-    env = data.get("env", "")
-    env_keys = [line.split("=")[0] for line in env.strip().splitlines() if "=" in line]
+    click.echo(f"\nName:         {comp.name}")
+    click.echo(f"App name:     {comp.app_name}")
+    click.echo(f"Status:       {comp.status}")
+    click.echo(f"Compose:      {len(comp.compose_file):,} chars")
+    env_keys = [line.split("=")[0] for line in comp.env.strip().splitlines() if "=" in line]
     click.echo(f"Env keys:     {', '.join(env_keys) if env_keys else '(none)'}")
 
-    deployments = data.get("deployments", [])
-    if deployments:
-        latest = deployments[0]
-        click.echo(f"\nLast deploy:  {latest.get('title', '?')} ({latest.get('status', '?')})")
-        click.echo(f"  at:         {latest.get('createdAt', '?')}")
-        if latest.get("errorMessage"):
-            click.echo(f"  error:      {latest['errorMessage']}")
+    if comp.deployments:
+        latest = comp.deployments[0]
+        click.echo(f"\nLast deploy:  {latest.title} ({latest.status})")
+        click.echo(f"  at:         {latest.created_at}")
+        if latest.error_message:
+            click.echo(f"  error:      {latest.error_message}")
 
-    containers = get_containers(client, app_name)
+    containers = client.get_containers(comp.app_name)
 
     click.echo("\nContainers:")
     if not containers:
@@ -58,7 +62,7 @@ def status(compose_id: str, live: bool) -> None:
         timer.summary("No containers found.")
         return
 
-    click.echo(format_container_table(containers, app_name))
+    click.echo(_format_container_table(containers))
 
     unhealthy = [c for c in containers if not _container_ok(c)]
     healthy_count = len(containers) - len(unhealthy)
@@ -66,8 +70,7 @@ def status(compose_id: str, live: bool) -> None:
     click.echo("")
 
     for c in unhealthy:
-        service = parse_service_name(c.get("name", "?"), app_name)
-        click.echo(hint_unhealthy(compose_id, service))
+        click.echo(hint_unhealthy(compose_id, c.service))
 
     if unhealthy:
         timer.summary(f"{healthy_count}/{len(containers)} containers healthy.")
