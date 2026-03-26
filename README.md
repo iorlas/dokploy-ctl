@@ -36,6 +36,7 @@ dokploy-ctl deploy <compose-id> docker-compose.prod.yml
 | `sync <id> <file>` | Push compose file to Dokploy without deploying |
 | `stop <id>` | Stop a compose app |
 | `start <id>` | Start a compose app + verify health |
+| `restart <id>` | Restart containers. `--service <name>` for a single service |
 | `logs <id>` | Container logs (default: last 5m). `-D` for deploy build log |
 | `init <project-id> <name>` | Create new compose app with sourceType fix |
 | `api <endpoint>` | Raw API passthrough (escape hatch) |

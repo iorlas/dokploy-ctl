@@ -1,6 +1,7 @@
 """Config loading, HTTP client, and API call helpers."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -47,14 +48,25 @@ def load_config(config_dir: Path = DEFAULT_CONFIG_DIR) -> tuple[str, str]:
 
     token = token_path.read_text().strip()
     url = url_path.read_text().strip().rstrip("/")
+
+    if not url or not url.startswith(("http://", "https://")):
+        click.echo(f"error: invalid URL in {url_path}: '{url}'", err=True)
+        click.echo("Fix: dokploy-ctl login --url https://your-dokploy-url --token <token>", err=True)
+        sys.exit(1)
+    if not token:
+        click.echo(f"error: empty token in {token_path}", err=True)
+        sys.exit(1)
+
     return url, token
 
 
 def make_client(url: str, token: str) -> httpx.Client:
+    verify = os.environ.get("DOKPLOY_INSECURE", "").lower() not in ("1", "true", "yes")
     return httpx.Client(
         base_url=url,
         headers={"x-api-key": token, "Content-Type": "application/json"},
         timeout=TIMEOUT,
+        verify=verify,
     )
 
 

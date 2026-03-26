@@ -27,3 +27,25 @@ def test_login_missing_args(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(cli, ["login", "--url", "https://example.com"])
     assert result.exit_code != 0
+
+
+def test_login_rejects_empty_url(tmp_path, monkeypatch):
+    monkeypatch.setattr("dokploy_ctl.cli.DEFAULT_CONFIG_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["login", "--url", "", "--token", "tok"])
+    assert result.exit_code != 0
+    assert "URL cannot be empty" in result.output or "URL cannot be empty" in (result.output + getattr(result, "stderr", ""))
+
+
+def test_login_rejects_empty_token(tmp_path, monkeypatch):
+    monkeypatch.setattr("dokploy_ctl.cli.DEFAULT_CONFIG_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["login", "--url", "https://example.com", "--token", ""])
+    assert result.exit_code != 0
+
+
+def test_login_rejects_whitespace_url(tmp_path, monkeypatch):
+    monkeypatch.setattr("dokploy_ctl.cli.DEFAULT_CONFIG_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["login", "--url", "   ", "--token", "tok"])
+    assert result.exit_code != 0

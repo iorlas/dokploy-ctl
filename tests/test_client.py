@@ -20,7 +20,38 @@ def test_load_config_missing_files(empty_config_dir):
         load_config(empty_config_dir)
 
 
+def test_load_config_rejects_invalid_url(tmp_path):
+    import pytest
+
+    (tmp_path / "url").write_text("not-a-url\n")
+    (tmp_path / "token").write_text("tok123\n")
+    with pytest.raises(SystemExit):
+        load_config(tmp_path)
+
+
+def test_load_config_rejects_empty_token(tmp_path):
+    import pytest
+
+    (tmp_path / "url").write_text("https://example.com\n")
+    (tmp_path / "token").write_text("  \n")
+    with pytest.raises(SystemExit):
+        load_config(tmp_path)
+
+
 def test_make_client_sets_headers():
     client = make_client("https://example.com", "tok123")
     assert client.headers["x-api-key"] == "tok123"
     assert "json" in client.headers["content-type"]
+
+
+def test_make_client_respects_insecure_env(monkeypatch):
+    monkeypatch.setenv("DOKPLOY_INSECURE", "1")
+    client = make_client("https://example.com", "tok123")
+    # Client should be created without error when DOKPLOY_INSECURE=1
+    assert client.headers["x-api-key"] == "tok123"
+
+
+def test_make_client_default_verify(monkeypatch):
+    monkeypatch.delenv("DOKPLOY_INSECURE", raising=False)
+    client = make_client("https://example.com", "tok123")
+    assert client.headers["x-api-key"] == "tok123"

@@ -74,7 +74,7 @@ def sync(compose_id: str, compose_file: str, env_file: str | None, env_flag: boo
 @click.argument("compose_file")
 @click.option("--env-file", "-e", default=None, help="Path to .env file")
 @click.option("--env", "env_flag", is_flag=True, default=False, help="Resolve ${VAR} refs from environment")
-@click.option("--timeout", "-t", default=300, help="Deploy timeout in seconds (default: 300)")
+@click.option("--timeout", "-t", default=600, help="Deploy timeout in seconds (default: 600)")
 def deploy(compose_id: str, compose_file: str, env_file: str | None, env_flag: bool, timeout: int) -> None:
     """Sync + deploy + poll + verify container health."""
     url, token = load_config()

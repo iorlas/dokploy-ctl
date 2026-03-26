@@ -8,6 +8,7 @@ from dokploy_ctl.deploy import deploy, sync
 from dokploy_ctl.find_cmd import find
 from dokploy_ctl.init_cmd import init
 from dokploy_ctl.logs import logs
+from dokploy_ctl.restart_cmd import restart
 from dokploy_ctl.start_cmd import start
 from dokploy_ctl.status import status
 from dokploy_ctl.stop_cmd import stop
@@ -27,6 +28,12 @@ def cli(ctx: click.Context) -> None:
 @click.option("--token", required=True, help="API token")
 def login(url: str, token: str) -> None:
     """Store Dokploy credentials."""
+    if not url or not url.strip():
+        click.echo("error: URL cannot be empty", err=True)
+        raise SystemExit(1)
+    if not token or not token.strip():
+        click.echo("error: token cannot be empty", err=True)
+        raise SystemExit(1)
     DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     (DEFAULT_CONFIG_DIR / "url").write_text(url.rstrip("/") + "\n")
     (DEFAULT_CONFIG_DIR / "token").write_text(token + "\n")
@@ -42,3 +49,4 @@ cli.add_command(sync)
 cli.add_command(init)
 cli.add_command(stop)
 cli.add_command(start)
+cli.add_command(restart)
