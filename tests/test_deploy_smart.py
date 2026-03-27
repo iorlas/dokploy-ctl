@@ -248,3 +248,98 @@ def test_deploy_no_dumb_polling_output(tmp_path):
     running_count = result.output.count("status=running")
     assert running_count == 0, f"Found {running_count} dumb 'status=running' lines\n{result.output}"
     assert result.exit_code == 0
+
+
+def test_deploy_done_but_unhealthy_auto_diagnoses(tmp_path):
+    """When deploy=done but containers aren't healthy after grace period, auto-fetch logs and fail."""
+    compose = tmp_path / "docker-compose.prod.yml"
+    compose.write_text("version: '3'\nservices:\n  api:\n    image: myapi")
+
+    elapsed_time = 0.0
+
+    def fake_sleep(_):
+        nonlocal elapsed_time
+        elapsed_time += 6.0
+
+    with (
+        patch("dokploy_ctl.deploy.DokployClient") as mock_client_cls,
+        patch("dokploy_ctl.deploy.show_deploy_log"),
+        patch("dokploy_ctl.deploy.show_problem_logs") as mock_problem_logs,
+    ):
+        client = mock_client_cls.return_value
+        client.url = "https://example.com"
+        client.token = "tok"
+
+        mock_updated = MagicMock()
+        mock_updated.compose_file = "x" * 100
+        mock_updated.env = ""
+        client.update_compose.return_value = mock_updated
+
+        mock_app = MagicMock()
+        mock_app.app_name = "test-app"
+        client.get_compose.return_value = mock_app
+
+        old_dep = _deployment("old")
+        done_dep = _deployment("new", status="done", log_path="/logs/build.log")
+        client.get_latest_deployment.side_effect = [old_dep] + [done_dep] * 20
+        client.trigger_deploy.return_value = None
+
+        # Container stays unhealthy — running but not healthy (e.g. app error)
+        unhealthy = _container("c1", "api", state="running", health="unhealthy", raw_status="Up 30s (unhealthy)")
+        client.get_containers.side_effect = [
+            [],  # pre-deploy
+        ] + [[unhealthy]] * 20  # every poll: still unhealthy
+
+        with (
+            patch("time.sleep", side_effect=fake_sleep),
+            patch("dokploy_ctl.timer.time.monotonic", side_effect=lambda: elapsed_time),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["deploy", "test-id", str(compose)])
+
+    assert result.exit_code != 0, f"Expected failure, got:\n{result.output}"
+    assert "Auto-diagnosing" in result.output, f"Expected auto-diagnose message:\n{result.output}"
+    assert "Deploy failed" in result.output
+    # Should have called show_problem_logs
+    assert mock_problem_logs.called, "Expected show_problem_logs to be called"
+
+
+def test_deploy_done_healthy_within_grace_succeeds(tmp_path):
+    """When deploy=done and containers become healthy within grace period, succeed."""
+    compose = tmp_path / "docker-compose.prod.yml"
+    compose.write_text("version: '3'\nservices:\n  api:\n    image: myapi")
+
+    with patch("dokploy_ctl.deploy.DokployClient") as mock_client_cls:
+        client = mock_client_cls.return_value
+        client.url = "https://example.com"
+        client.token = "tok"
+
+        mock_updated = MagicMock()
+        mock_updated.compose_file = "x" * 100
+        mock_updated.env = ""
+        client.update_compose.return_value = mock_updated
+
+        mock_app = MagicMock()
+        mock_app.app_name = "test-app"
+        client.get_compose.return_value = mock_app
+
+        old_dep = _deployment("old")
+        done_dep = _deployment("new", status="done")
+        client.get_latest_deployment.side_effect = [old_dep, done_dep, done_dep]
+        client.trigger_deploy.return_value = None
+
+        # Poll 1: starting, Poll 2: healthy
+        starting = _container("c1", "api", state="running", health="starting", raw_status="Up 5s (health: starting)")
+        healthy = _container("c1", "api", state="running", health="healthy", raw_status="Up 15s (healthy)")
+        client.get_containers.side_effect = [
+            [],  # pre-deploy
+            [starting],  # poll 1: starting
+            [healthy],  # poll 2: healthy
+        ]
+
+        with patch("time.sleep"):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["deploy", "test-id", str(compose)])
+
+    assert result.exit_code == 0, f"Expected success:\n{result.output}"
+    assert "Deploy succeeded" in result.output

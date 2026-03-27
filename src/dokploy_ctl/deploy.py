@@ -19,6 +19,63 @@ from dokploy_ctl.timer import Timer
 POLL_INTERVAL = 6
 HEARTBEAT_INTERVAL = 30
 STALL_THRESHOLD = 90
+DEPLOY_DONE_GRACE = 30
+
+
+def _auto_diagnose(
+    timer: Timer,
+    url: str,
+    token: str,
+    compose_id: str,
+    app_name: str,
+    current_containers: list,
+    latest_dep,
+    transition_history: list[tuple[str, list[str]]],
+    reason: str,
+) -> None:
+    """Fetch logs for problem containers and exit. Called on stall or deploy-done timeout."""
+    timer.log(f"Auto-diagnosing: {reason}")
+
+    if transition_history:
+        timer.log("")
+        timer.log("Container transitions:")
+        for stamp, tlist in transition_history:
+            for t in tlist:
+                timer.log(f"  {stamp} {t}")
+        timer.log("")
+
+    # Auto-fetch deploy log
+    log_path = latest_dep.log_path if latest_dep else ""
+    if log_path:
+        timer.log("=== Deploy build log ===")
+        show_deploy_log(url, token, log_path)
+        timer.log("")
+
+    # Auto-fetch container logs for problem containers
+    unhealthy_count = 0
+    if current_containers:
+        raw_containers = [
+            {"name": f"{app_name}-{c.service}-1", "state": c.state, "status": c.raw_status, "containerId": c.container_id}
+            for c in current_containers
+        ]
+        show_problem_logs(url, token, raw_containers, app_name)
+        for c in current_containers:
+            if c.state in ("exited", "dead") and "Exited (0)" not in c.raw_status:
+                reason_detail = "exited"
+                m = re.search(r"Exited \((\d+)\)", c.raw_status)
+                if m:
+                    reason_detail = f"exited({m.group(1)})"
+                timer.log("")
+                timer.log(hint_deploy_failed(compose_id, c.service, reason_detail))
+                unhealthy_count += 1
+
+    if unhealthy_count == 1:
+        timer.summary(f"Deploy failed. {unhealthy_count} unhealthy service.")
+    elif unhealthy_count > 1:
+        timer.summary(f"Deploy failed. {unhealthy_count} unhealthy services.")
+    else:
+        timer.summary(f"Deploy failed ({reason}).")
+    sys.exit(1)
 
 
 def _do_sync(client, compose_id: str, compose_file: str, env_file: str | None, env_flag: bool = False, timer: Timer | None = None) -> None:
@@ -130,6 +187,7 @@ def deploy(compose_id: str, compose_file: str, env_file: str | None, env_flag: b
     last_transition_time = timer.elapsed()
     last_heartbeat_time = timer.elapsed()
     last_stall_warning_time: float | None = None
+    deploy_done_time: float | None = None
     transition_history: list[tuple[str, list[str]]] = []
     deploy_status = "running"
 
@@ -176,7 +234,20 @@ def deploy(compose_id: str, compose_file: str, env_file: str | None, env_flag: b
         # Heartbeat if no recent output
         if now - last_heartbeat_time >= HEARTBEAT_INTERVAL:
             stalled = check_stall(last_transition_time, now, STALL_THRESHOLD)
-            if stalled:
+            if stalled and deploy_status == "done":
+                # Deploy finished but containers aren't healthy — auto-diagnose
+                _auto_diagnose(
+                    timer,
+                    url,
+                    token,
+                    compose_id,
+                    app_name,
+                    current_containers,
+                    latest_dep,
+                    transition_history,
+                    reason=f"deploy done but containers not healthy after {STALL_THRESHOLD}s",
+                )
+            elif stalled:
                 if last_stall_warning_time is None:
                     timer.log(f"WARNING: no container changes for {STALL_THRESHOLD}s. Deploy may be stalled.")
                     timer.log(f"  Hint: dokploy-ctl logs {compose_id} -D    (check deploy build log)")
@@ -191,47 +262,17 @@ def deploy(compose_id: str, compose_file: str, env_file: str | None, env_flag: b
         if deploy_status == "error":
             error_msg = latest_dep.error_message if latest_dep else "unknown error"
             timer.log(f'deploy=error | Deploy failed: "{error_msg}"')
-
-            if transition_history:
-                timer.log("")
-                timer.log("Container transitions before failure:")
-                for stamp, tlist in transition_history:
-                    for t in tlist:
-                        timer.log(f"  {stamp} {t}")
-                timer.log("")
-
-            # Auto-fetch deploy log
-            log_path = latest_dep.log_path if latest_dep else ""
-            if log_path:
-                timer.log("=== Deploy build log ===")
-                show_deploy_log(url, token, log_path)
-                timer.log("")
-
-            # Auto-fetch container logs for problem containers
-            unhealthy_count = 0
-            if current_containers:
-                raw_containers = [
-                    {"name": f"{app_name}-{c.service}-1", "state": c.state, "status": c.raw_status, "containerId": c.container_id}
-                    for c in current_containers
-                ]
-                show_problem_logs(url, token, raw_containers, app_name)
-                for c in current_containers:
-                    if c.state in ("exited", "dead") and "Exited (0)" not in c.raw_status:
-                        reason = "exited"
-                        m = re.search(r"Exited \((\d+)\)", c.raw_status)
-                        if m:
-                            reason = f"exited({m.group(1)})"
-                        timer.log("")
-                        timer.log(hint_deploy_failed(compose_id, c.service, reason))
-                        unhealthy_count += 1
-
-            if unhealthy_count == 1:
-                timer.summary(f"Deploy failed. {unhealthy_count} unhealthy service.")
-            elif unhealthy_count > 1:
-                timer.summary(f"Deploy failed. {unhealthy_count} unhealthy services.")
-            else:
-                timer.summary("Deploy failed.")
-            sys.exit(1)
+            _auto_diagnose(
+                timer,
+                url,
+                token,
+                compose_id,
+                app_name,
+                current_containers,
+                latest_dep,
+                transition_history,
+                reason="deploy error",
+            )
 
         # Success path: healthy phase AND deploy done
         if phase == "healthy" and deploy_status == "done":
@@ -243,7 +284,24 @@ def deploy(compose_id: str, compose_file: str, env_file: str | None, env_flag: b
             timer.summary("Deploy succeeded.")
             return
 
-        # If deploy says done but phase not yet healthy, keep polling briefly
+        # Track when deploy first became done (for grace period)
+        if deploy_status == "done" and deploy_done_time is None:
+            deploy_done_time = now
+
+        # Grace period: deploy done but not healthy — give containers time to start
+        if deploy_done_time is not None and (now - deploy_done_time) > DEPLOY_DONE_GRACE:
+            _auto_diagnose(
+                timer,
+                url,
+                token,
+                compose_id,
+                app_name,
+                current_containers,
+                latest_dep,
+                transition_history,
+                reason=f"deploy done but containers not healthy after {DEPLOY_DONE_GRACE}s grace period",
+            )
+
         prev_containers = current_containers
 
     # Timeout
