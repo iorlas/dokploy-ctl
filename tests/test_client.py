@@ -88,3 +88,10 @@ def test_dash_safe_command_inserts_separator():
     assert result.exit_code == 0
     assert "id=-G9RdFPM8_udm2a3squMY" in result.output
     assert "service=worker" in result.output
+
+    # Explicit '--' before dash-prefixed ID with options after
+    result = runner.invoke(fake_cmd, ["--", "-G9RdFPM8_udm2a3squMY", "-s", "worker", "-n", "10"])
+    assert result.exit_code == 0, f"Failed with '--':\n{result.output}"
+    assert "id=-G9RdFPM8_udm2a3squMY" in result.output
+    assert "service=worker" in result.output
+    assert "tail=10" in result.output

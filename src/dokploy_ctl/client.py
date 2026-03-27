@@ -54,6 +54,11 @@ class DashSafeCommand(click.Command):
 
         for i, arg in enumerate(new_args):
             if arg == "--":
+                # User used explicit '--'; check if next arg is a dash-prefixed ID
+                if i + 1 < len(new_args) and self._is_dash_id(new_args[i + 1], known_short):
+                    original_value = new_args[i + 1]
+                    new_args[i + 1] = _DASH_ID_PLACEHOLDER
+                    new_args.pop(i)  # remove the '--' so options after ID still work
                 break
             if self._is_dash_id(arg, known_short):
                 original_value = arg
