@@ -7,10 +7,10 @@ Deploy, sync, inspect, and debug your Dokploy compose apps from the terminal —
 ## Install
 
 ```bash
-pip install git+https://github.com/agentic-eng/dokploy-ctl.git
+pip install git+https://github.com/yoselabs/dokploy-ctl.git
 
 # or
-uv tool install git+https://github.com/agentic-eng/dokploy-ctl.git
+uv tool install git+https://github.com/yoselabs/dokploy-ctl.git
 ```
 
 ## Quick Start
@@ -81,7 +81,7 @@ On failure, `deploy` **auto-fetches logs** and **suggests the next command**:
     # all secrets referenced in docker-compose.prod.yml:
     # DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
   run: |
-    pip install git+https://github.com/agentic-eng/dokploy-ctl.git
+    pip install git+https://github.com/yoselabs/dokploy-ctl.git
     dokploy-ctl login --url "$DOKPLOY_URL" --token "$DOKPLOY_AUTH_TOKEN"
     dokploy-ctl deploy "$DOKPLOY_COMPOSE_ID" docker-compose.prod.yml --env
 ```
